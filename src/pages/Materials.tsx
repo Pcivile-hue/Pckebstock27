@@ -26,6 +26,7 @@ import {
 } from '@/lib/db';
 import { parseExcelFile, downloadMaterialTemplate, exportMaterialsToExcel } from '@/lib/excel';
 import { formatNumber, formatCurrency } from '@/lib/format';
+import * as supabaseModule from '@/lib/supabase';
 import type { Material, Category, Unit } from '@/types';
 import type { ImportResult, ImportedMaterialRow } from '@/lib/excel';
 
@@ -134,39 +135,92 @@ export default function Materials() {
   };
 
   const handleImport = async () => {
-    if (!importResult) return;
+    if (!importResult || importing) return;
+
     setImporting(true);
+    setImportMessage({
+      type: 'success',
+      text: 'انتظر قليلاً، جاري استيراد البيانات من Excel...',
+    });
+
     let added = 0;
     let updated = 0;
     let skipped = 0;
 
     try {
+      // يدعم ملف supabase.ts سواء كان يصدر supabase باسم named export
+      // أو كـ default export.
+      const supabase =
+        (supabaseModule as typeof supabaseModule & { supabase?: any }).supabase ??
+        (supabaseModule as typeof supabaseModule & { default?: any }).default;
+
+      if (!supabase || typeof supabase.from !== 'function') {
+        throw new Error(
+          'تعذر الاتصال بعميل Supabase. تحقق من ملف lib/supabase.ts وطريقة تصدير supabase.'
+        );
+      }
+
       for (const row of importResult.rows) {
         if (row.errors.length > 0) {
           skipped++;
           continue;
         }
 
-        let category = categories.find((c) => c.name_ar === row.category || c.name_fr === row.category);
-        if (!category) {
-          // Create category if it doesn't exist
-          const { data: newCat } = await import('@/lib/supabase').then((m) =>
-            m.supabase.from('categories').insert({ name_ar: row.category, name_fr: row.category }).select('*').single()
-          );
+        // البحث عن التصنيف، وإن لم يكن موجوداً يتم إنشاؤه.
+        let category = categories.find(
+          (c) => c.name_ar === row.category || c.name_fr === row.category
+        );
+
+        if (!category && row.category?.trim()) {
+          const { data: newCat, error: catError } = await supabase
+            .from('categories')
+            .insert({
+              name_ar: row.category.trim(),
+              name_fr: row.category.trim(),
+            })
+            .select('*')
+            .single();
+
+          if (catError) {
+            throw new Error(`فشل إنشاء التصنيف "${row.category}": ${catError.message}`);
+          }
+
           category = newCat as Category;
-          if (category) setCategories((prev) => [...prev, category!]);
+
+          if (category) {
+            setCategories((prev) => [...prev, category!]);
+          }
         }
 
-        let unit = units.find((u) => u.name_ar === row.unit || u.name_fr === row.unit);
-        if (!unit) {
-          const { data: newUnit } = await import('@/lib/supabase').then((m) =>
-            m.supabase.from('units').insert({ name_ar: row.unit, name_fr: row.unit }).select('*').single()
-          );
+        // البحث عن الوحدة، وإن لم تكن موجودة يتم إنشاؤها.
+        let unit = units.find(
+          (u) => u.name_ar === row.unit || u.name_fr === row.unit
+        );
+
+        if (!unit && row.unit?.trim()) {
+          const { data: newUnit, error: unitError } = await supabase
+            .from('units')
+            .insert({
+              name_ar: row.unit.trim(),
+              name_fr: row.unit.trim(),
+            })
+            .select('*')
+            .single();
+
+          if (unitError) {
+            throw new Error(`فشل إنشاء الوحدة "${row.unit}": ${unitError.message}`);
+          }
+
           unit = newUnit as Unit;
-          if (unit) setUnits((prev) => [...prev, unit!]);
+
+          if (unit) {
+            setUnits((prev) => [...prev, unit!]);
+          }
         }
 
+        // البحث عن المادة، ثم تحديثها إن كانت موجودة أو إنشاؤها إن لم تكن.
         const existing = await findMaterialByName(row.name_fr, row.name_ar);
+
         if (existing) {
           await updateMaterial(existing.id, {
             unit_price: row.price,
@@ -174,6 +228,7 @@ export default function Materials() {
             category_id: category?.id,
             unit_id: unit?.id,
           });
+
           updated++;
         } else {
           const newMat = await createMaterial({
@@ -184,6 +239,7 @@ export default function Materials() {
             unit_price: row.price,
             opening_quantity: row.quantity,
           });
+
           await addStockMovement({
             material_id: newMat.id,
             movement_type: 'opening',
@@ -192,19 +248,30 @@ export default function Materials() {
             value: row.quantity * row.price,
             notes: 'رصيد افتتاحي من استيراد Excel',
           });
+
           added++;
         }
       }
 
-      await addOperationLog('استيراد مواد', `تم استيراد ${added} مادة جديدة، تحديث ${updated}، تجاهل ${skipped}`);
+      await addOperationLog(
+        'استيراد مواد',
+        `تم استيراد ${added} مادة جديدة، تحديث ${updated}، تجاهل ${skipped}`
+      );
+
       setImportMessage({
         type: 'success',
         text: `تم الاستيراد بنجاح: ${added} مادة جديدة، ${updated} محدثة، ${skipped} متجاهلة.`,
       });
+
       setImportResult(null);
-      loadData();
+      await loadData();
     } catch (err) {
-      setImportMessage({ type: 'error', text: 'فشل الاستيراد: ' + (err as Error).message });
+      const message = err instanceof Error ? err.message : String(err);
+
+      setImportMessage({
+        type: 'error',
+        text: 'فشل الاستيراد: ' + message,
+      });
     } finally {
       setImporting(false);
     }
@@ -215,7 +282,24 @@ export default function Materials() {
   }
 
   return (
-    <div className="space-y-4">
+    <>
+      {importing && importResult && (
+        <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-center">
+            <div className="mx-auto mb-5 w-14 h-14 rounded-full border-4 border-slate-200 border-t-teal-600 animate-spin" />
+            <h2 className="text-xl font-bold text-slate-800 mb-2">
+              انتظر قليلاً...
+            </h2>
+            <p className="text-slate-500 leading-7">
+              جاري استيراد البيانات من ملف Excel وحفظها في قاعدة البيانات.
+              <br />
+              لا تغلق الصفحة حتى تكتمل العملية.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -283,9 +367,22 @@ export default function Materials() {
               </p>
             </div>
             <div className="flex gap-2">
-              <button onClick={handleImport} className="btn btn-primary" disabled={importing}>
-                <CheckCircle className="w-4 h-4" />
-                تأكيد الاستيراد
+              <button
+                onClick={handleImport}
+                className="btn btn-primary"
+                disabled={importing}
+              >
+                {importing ? (
+                  <>
+                    <span className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                    جاري الاستيراد...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-4 h-4" />
+                    تأكيد الاستيراد
+                  </>
+                )}
               </button>
               <button onClick={() => setImportResult(null)} className="btn btn-secondary">
                 <X className="w-4 h-4" />
@@ -449,7 +546,8 @@ export default function Materials() {
           }}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
