@@ -19,14 +19,15 @@ import {
   updateMaterial,
   deleteMaterial,
   getCategories,
+  createCategory,
   getUnits,
+  createUnit,
   findMaterialByName,
   addStockMovement,
   addOperationLog,
 } from '@/lib/db';
 import { parseExcelFile, downloadMaterialTemplate, exportMaterialsToExcel } from '@/lib/excel';
 import { formatNumber, formatCurrency } from '@/lib/format';
-import * as supabaseModule from '@/lib/supabase';
 import type { Material, Category, Unit } from '@/types';
 import type { ImportResult, ImportedMaterialRow } from '@/lib/excel';
 
@@ -148,73 +149,59 @@ export default function Materials() {
     let skipped = 0;
 
     try {
-      // يدعم ملف supabase.ts سواء كان يصدر supabase باسم named export
-      // أو كـ default export.
-      const supabase =
-        (supabaseModule as typeof supabaseModule & { supabase?: any }).supabase ??
-        (supabaseModule as typeof supabaseModule & { default?: any }).default;
-
-      if (!supabase || typeof supabase.from !== 'function') {
-        throw new Error(
-          'تعذر الاتصال بعميل Supabase. تحقق من ملف lib/supabase.ts وطريقة تصدير supabase.'
-        );
-      }
-
       for (const row of importResult.rows) {
         if (row.errors.length > 0) {
           skipped++;
           continue;
         }
 
-        // البحث عن التصنيف، وإن لم يكن موجوداً يتم إنشاؤه.
+        // البحث عن التصنيف، وإن لم يكن موجوداً يتم إنشاؤه عبر db.ts.
+        // لا نستدعي supabase مباشرة هنا حتى تكون كل عمليات قاعدة البيانات
+        // من خلال طبقة db الموحدة.
         let category = categories.find(
-          (c) => c.name_ar === row.category || c.name_fr === row.category
+          (c) =>
+            c.name_ar?.trim() === row.category?.trim() ||
+            c.name_fr?.trim() === row.category?.trim()
         );
 
         if (!category && row.category?.trim()) {
-          const { data: newCat, error: catError } = await supabase
-            .from('categories')
-            .insert({
+          try {
+            category = await createCategory({
               name_ar: row.category.trim(),
               name_fr: row.category.trim(),
-            })
-            .select('*')
-            .single();
+            });
 
-          if (catError) {
-            throw new Error(`فشل إنشاء التصنيف "${row.category}": ${catError.message}`);
-          }
-
-          category = newCat as Category;
-
-          if (category) {
             setCategories((prev) => [...prev, category!]);
+          } catch (err) {
+            throw new Error(
+              `فشل إنشاء التصنيف "${row.category}": ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
           }
         }
 
-        // البحث عن الوحدة، وإن لم تكن موجودة يتم إنشاؤها.
+        // البحث عن الوحدة، وإن لم تكن موجودة يتم إنشاؤها عبر db.ts.
         let unit = units.find(
-          (u) => u.name_ar === row.unit || u.name_fr === row.unit
+          (u) =>
+            u.name_ar?.trim() === row.unit?.trim() ||
+            u.name_fr?.trim() === row.unit?.trim()
         );
 
         if (!unit && row.unit?.trim()) {
-          const { data: newUnit, error: unitError } = await supabase
-            .from('units')
-            .insert({
+          try {
+            unit = await createUnit({
               name_ar: row.unit.trim(),
               name_fr: row.unit.trim(),
-            })
-            .select('*')
-            .single();
+            });
 
-          if (unitError) {
-            throw new Error(`فشل إنشاء الوحدة "${row.unit}": ${unitError.message}`);
-          }
-
-          unit = newUnit as Unit;
-
-          if (unit) {
             setUnits((prev) => [...prev, unit!]);
+          } catch (err) {
+            throw new Error(
+              `فشل إنشاء الوحدة "${row.unit}": ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            );
           }
         }
 
