@@ -1,0 +1,123 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    font-family: 'Cairo', 'Tajawal', system-ui, sans-serif;
+  }
+
+  body {
+    direction: rtl;
+    background-color: #f1f5f9;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all duration-200 text-sm;
+  }
+  .btn-primary {
+    @apply bg-teal-600 text-white hover:bg-teal-700 shadow-sm;
+  }
+  .btn-secondary {
+    @apply bg-slate-100 text-slate-700 hover:bg-slate-200;
+  }
+  .btn-danger {
+    @apply bg-red-50 text-red-600 hover:bg-red-100;
+  }
+  .btn-success {
+    @apply bg-emerald-50 text-emerald-600 hover:bg-emerald-100;
+  }
+  .btn-ghost {
+    @apply text-slate-600 hover:bg-slate-100;
+  }
+  .input {
+    @apply w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all;
+  }
+  .select {
+    @apply w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent transition-all;
+  }
+  .label {
+    @apply block text-sm font-medium text-slate-600 mb-1;
+  }
+  .card {
+    @apply bg-white rounded-xl shadow-sm border border-slate-200;
+  }
+  .table-header {
+    @apply bg-slate-50 text-slate-600 font-semibold text-sm;
+  }
+  .table-row {
+    @apply hover:bg-slate-50 transition-colors;
+  }
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+  .stat-card {
+    @apply bg-white rounded-xl shadow-sm border border-slate-200 p-5 transition-all hover:shadow-md;
+  }
+}
+
+/* Print styles */
+@media print {
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+  body {
+    direction: rtl;
+    background: white !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .print-page {
+    page-break-after: always;
+  }
+  .print-page:last-child {
+    page-break-after: auto;
+  }
+  thead {
+    display: table-header-group;
+  }
+  tr {
+    page-break-inside: avoid;
+  }
+}
+
+.print-only {
+  display: none;
+}
+
+/* Smooth transitions */
+.transition-base {
+  transition: all 0.2s ease;
+}
+
+/* Number input cleanup */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
