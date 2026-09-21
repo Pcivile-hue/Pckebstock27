@@ -43,6 +43,8 @@ export default function Materials() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0, added: 0, updated: 0, failed: 0 });
+  const [importErrors, setImportErrors] = useState<Array<{ rowIndex: number; name: string; message: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -138,123 +140,169 @@ export default function Materials() {
   const handleImport = async () => {
     if (!importResult || importing) return;
 
+    const validRows = importResult.rows.filter((row) => row.errors.length === 0);
+
+    if (validRows.length === 0) {
+      setImportMessage({
+        type: 'error',
+        text: 'لا توجد مواد صالحة للاستيراد.',
+      });
+      return;
+    }
+
     setImporting(true);
+    setImportErrors([]);
+    setImportProgress({
+      current: 0,
+      total: validRows.length,
+      added: 0,
+      updated: 0,
+      failed: 0,
+    });
     setImportMessage({
       type: 'success',
-      text: 'انتظر قليلاً، جاري استيراد البيانات من Excel...',
+      text: `انتظر قليلاً، جاري استيراد ${validRows.length} مادة...`,
     });
 
     let added = 0;
     let updated = 0;
-    let skipped = 0;
+    let failed = 0;
+    let processed = 0;
+    const errors: Array<{ rowIndex: number; name: string; message: string }> = [];
+
+    const getErrorMessage = (err: unknown): string => {
+      if (err instanceof Error) return err.message;
+      if (typeof err === 'string') return err;
+      try {
+        return JSON.stringify(err);
+      } catch {
+        return String(err);
+      }
+    };
 
     try {
-      for (const row of importResult.rows) {
-        if (row.errors.length > 0) {
-          skipped++;
-          continue;
-        }
+      for (const row of validRows) {
+        try {
+          // البحث عن التصنيف، وإن لم يكن موجوداً يتم إنشاؤه عبر db.ts.
+          let category = categories.find(
+            (c) =>
+              c.name_ar?.trim() === row.category?.trim() ||
+              c.name_fr?.trim() === row.category?.trim()
+          );
 
-        // البحث عن التصنيف، وإن لم يكن موجوداً يتم إنشاؤه عبر db.ts.
-        // لا نستدعي supabase مباشرة هنا حتى تكون كل عمليات قاعدة البيانات
-        // من خلال طبقة db الموحدة.
-        let category = categories.find(
-          (c) =>
-            c.name_ar?.trim() === row.category?.trim() ||
-            c.name_fr?.trim() === row.category?.trim()
-        );
+          if (!category && row.category?.trim()) {
+            try {
+              category = await createCategory({
+                name_ar: row.category.trim(),
+                name_fr: row.category.trim(),
+              });
+              setCategories((prev) => [...prev, category!]);
+            } catch (err) {
+              throw new Error(
+                `فشل إنشاء التصنيف "${row.category}": ${getErrorMessage(err)}`
+              );
+            }
+          }
 
-        if (!category && row.category?.trim()) {
-          try {
-            category = await createCategory({
-              name_ar: row.category.trim(),
-              name_fr: row.category.trim(),
+          // البحث عن الوحدة، وإن لم تكن موجودة يتم إنشاؤها عبر db.ts.
+          let unit = units.find(
+            (u) =>
+              u.name_ar?.trim() === row.unit?.trim() ||
+              u.name_fr?.trim() === row.unit?.trim()
+          );
+
+          if (!unit && row.unit?.trim()) {
+            try {
+              unit = await createUnit({
+                name_ar: row.unit.trim(),
+                name_fr: row.unit.trim(),
+              });
+              setUnits((prev) => [...prev, unit!]);
+            } catch (err) {
+              throw new Error(
+                `فشل إنشاء الوحدة "${row.unit}": ${getErrorMessage(err)}`
+              );
+            }
+          }
+
+          // البحث عن المادة، ثم تحديثها إن كانت موجودة أو إنشاؤها إن لم تكن.
+          const existing = await findMaterialByName(row.name_fr, row.name_ar);
+
+          if (existing) {
+            await updateMaterial(existing.id, {
+              unit_price: row.price,
+              opening_quantity: row.quantity,
+              category_id: category?.id,
+              unit_id: unit?.id,
+            });
+            updated++;
+          } else {
+            const newMat = await createMaterial({
+              name_fr: row.name_fr,
+              name_ar: row.name_ar,
+              category_id: category?.id,
+              unit_id: unit?.id,
+              unit_price: row.price,
+              opening_quantity: row.quantity,
             });
 
-            setCategories((prev) => [...prev, category!]);
-          } catch (err) {
-            throw new Error(
-              `فشل إنشاء التصنيف "${row.category}": ${
-                err instanceof Error ? err.message : String(err)
-              }`
-            );
-          }
-        }
-
-        // البحث عن الوحدة، وإن لم تكن موجودة يتم إنشاؤها عبر db.ts.
-        let unit = units.find(
-          (u) =>
-            u.name_ar?.trim() === row.unit?.trim() ||
-            u.name_fr?.trim() === row.unit?.trim()
-        );
-
-        if (!unit && row.unit?.trim()) {
-          try {
-            unit = await createUnit({
-              name_ar: row.unit.trim(),
-              name_fr: row.unit.trim(),
+            await addStockMovement({
+              material_id: newMat.id,
+              movement_type: 'opening',
+              quantity: row.quantity,
+              unit_price: row.price,
+              value: row.quantity * row.price,
+              notes: 'رصيد افتتاحي من استيراد Excel',
             });
 
-            setUnits((prev) => [...prev, unit!]);
-          } catch (err) {
-            throw new Error(
-              `فشل إنشاء الوحدة "${row.unit}": ${
-                err instanceof Error ? err.message : String(err)
-              }`
-            );
+            added++;
           }
+        } catch (err) {
+          failed++;
+          const message = getErrorMessage(err);
+          const rowError = {
+            rowIndex: row.rowIndex,
+            name: row.name_ar || row.name_fr || `الصف ${row.rowIndex}`,
+            message,
+          };
+          errors.push(rowError);
+          console.error(`Import failed at Excel row ${row.rowIndex}:`, err);
         }
 
-        // البحث عن المادة، ثم تحديثها إن كانت موجودة أو إنشاؤها إن لم تكن.
-        const existing = await findMaterialByName(row.name_fr, row.name_ar);
-
-        if (existing) {
-          await updateMaterial(existing.id, {
-            unit_price: row.price,
-            opening_quantity: row.quantity,
-            category_id: category?.id,
-            unit_id: unit?.id,
-          });
-
-          updated++;
-        } else {
-          const newMat = await createMaterial({
-            name_fr: row.name_fr,
-            name_ar: row.name_ar,
-            category_id: category?.id,
-            unit_id: unit?.id,
-            unit_price: row.price,
-            opening_quantity: row.quantity,
-          });
-
-          await addStockMovement({
-            material_id: newMat.id,
-            movement_type: 'opening',
-            quantity: row.quantity,
-            unit_price: row.price,
-            value: row.quantity * row.price,
-            notes: 'رصيد افتتاحي من استيراد Excel',
-          });
-
-          added++;
-        }
+        processed++;
+        setImportProgress({
+          current: processed,
+          total: validRows.length,
+          added,
+          updated,
+          failed,
+        });
       }
 
       await addOperationLog(
         'استيراد مواد',
-        `تم استيراد ${added} مادة جديدة، تحديث ${updated}، تجاهل ${skipped}`
+        `تم استيراد ${added} مادة جديدة، تحديث ${updated}، فشل ${failed}`
       );
 
-      setImportMessage({
-        type: 'success',
-        text: `تم الاستيراد بنجاح: ${added} مادة جديدة، ${updated} محدثة، ${skipped} متجاهلة.`,
-      });
+      setImportErrors(errors);
 
-      setImportResult(null);
+      if (failed === 0) {
+        setImportMessage({
+          type: 'success',
+          text: `تم الاستيراد بنجاح: ${added} مادة جديدة، ${updated} محدثة.`,
+        });
+        setImportResult(null);
+      } else {
+        setImportMessage({
+          type: 'error',
+          text: `اكتمل الاستيراد مع أخطاء: ${added} جديدة، ${updated} محدثة، ${failed} فشلت. تم تسجيل تفاصيل الأخطاء أدناه.`,
+        });
+      }
+
       await loadData();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-
+      const message = getErrorMessage(err);
+      console.error('Import process failed:', err);
       setImportMessage({
         type: 'error',
         text: 'فشل الاستيراد: ' + message,
@@ -278,10 +326,22 @@ export default function Materials() {
               انتظر قليلاً...
             </h2>
             <p className="text-slate-500 leading-7">
-              جاري استيراد البيانات من ملف Excel وحفظها في قاعدة البيانات.
+              جاري حفظ البيانات في قاعدة البيانات.
               <br />
-              لا تغلق الصفحة حتى تكتمل العملية.
+              المادة {importProgress.current} من {importProgress.total}
             </p>
+            <div className="mt-5 h-2 w-full rounded-full bg-slate-100 overflow-hidden">
+              <div
+                className="h-full bg-teal-600 transition-all duration-300"
+                style={{
+                  width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%`,
+                }}
+              />
+            </div>
+            <div className="mt-3 text-xs text-slate-500">
+              جديدة: {importProgress.added} — محدثة: {importProgress.updated} — فشلت: {importProgress.failed}
+            </div>
+            <p className="mt-3 text-xs text-slate-400">لا تغلق الصفحة حتى تكتمل العملية.</p>
           </div>
         </div>
       )}
@@ -340,6 +400,25 @@ export default function Materials() {
           <button onClick={() => setImportMessage(null)} className="mr-auto">
             <X className="w-4 h-4" />
           </button>
+        </div>
+      )}
+
+      {importErrors.length > 0 && !importing && (
+        <div className="card p-5 border-2 border-red-200 bg-red-50/40">
+          <div className="flex items-center gap-2 mb-3 text-red-700">
+            <AlertCircle className="w-5 h-5" />
+            <h3 className="font-semibold">تفاصيل المواد التي لم يتم استيرادها</h3>
+          </div>
+          <div className="space-y-2 max-h-60 overflow-y-auto">
+            {importErrors.map((item, index) => (
+              <div key={`${item.rowIndex}-${index}`} className="bg-white rounded-lg p-3 border border-red-100 text-sm">
+                <div className="font-medium text-slate-800">
+                  الصف {item.rowIndex}: {item.name}
+                </div>
+                <div className="text-red-600 mt-1">{item.message}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
