@@ -65,6 +65,29 @@ export async function createCategory(cat: Partial<Category>): Promise<Category> 
   return data as Category;
 }
 
+export async function findOrCreateCategory(name: string): Promise<Category> {
+  const value = name.trim();
+  if (!value) throw new Error('اسم التصنيف فارغ');
+
+  const { data: byAr, error: arError } = await supabase
+    .from('categories')
+    .select('*')
+    .eq('name_ar', value)
+    .maybeSingle();
+  if (arError) throw arError;
+  if (byAr) return byAr as Category;
+
+  const { data: byFr, error: frError } = await supabase
+    .from('categories')
+    .select('*')
+    .eq('name_fr', value)
+    .maybeSingle();
+  if (frError) throw frError;
+  if (byFr) return byFr as Category;
+
+  return createCategory({ name_ar: value, name_fr: value });
+}
+
 export async function updateCategory(id: string, cat: Partial<Category>): Promise<Category> {
   const { data, error } = await supabase.from('categories').update(cat).eq('id', id).select('*').single();
   if (error) throw error;
@@ -92,6 +115,29 @@ export async function createUnit(unit: Partial<Unit>): Promise<Unit> {
   return data as Unit;
 }
 
+export async function findOrCreateUnit(name: string): Promise<Unit> {
+  const value = name.trim();
+  if (!value) throw new Error('اسم الوحدة فارغ');
+
+  const { data: byAr, error: arError } = await supabase
+    .from('units')
+    .select('*')
+    .eq('name_ar', value)
+    .maybeSingle();
+  if (arError) throw arError;
+  if (byAr) return byAr as Unit;
+
+  const { data: byFr, error: frError } = await supabase
+    .from('units')
+    .select('*')
+    .eq('name_fr', value)
+    .maybeSingle();
+  if (frError) throw frError;
+  if (byFr) return byFr as Unit;
+
+  return createUnit({ name_ar: value, name_fr: value });
+}
+
 export async function updateUnit(id: string, unit: Partial<Unit>): Promise<Unit> {
   const { data, error } = await supabase.from('units').update(unit).eq('id', id).select('*').single();
   if (error) throw error;
@@ -109,7 +155,8 @@ export async function getMaterials(activeOnly = false): Promise<Material[]> {
   let query = supabase
     .from('materials')
     .select('*, category:categories(*), unit:units(*)')
-    .order('name_ar');
+    .order('sort_order', { referencedTable: 'categories', ascending: true })
+    .order('name_ar', { ascending: true });
   if (activeOnly) query = query.eq('is_active', true);
   const { data, error } = await query;
   if (error) throw error;
@@ -139,13 +186,30 @@ export async function deleteMaterial(id: string): Promise<void> {
 }
 
 export async function findMaterialByName(nameFr: string, nameAr: string): Promise<Material | null> {
-  const { data, error } = await supabase
-    .from('materials')
-    .select('*')
-    .or(`name_fr.eq.${nameFr},name_ar.eq.${nameAr}`)
-    .maybeSingle();
-  if (error) throw error;
-  return data as Material | null;
+  const fr = nameFr.trim();
+  const ar = nameAr.trim();
+
+  if (fr) {
+    const { data, error } = await supabase
+      .from('materials')
+      .select('*')
+      .eq('name_fr', fr)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) return data as Material;
+  }
+
+  if (ar) {
+    const { data, error } = await supabase
+      .from('materials')
+      .select('*')
+      .eq('name_ar', ar)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) return data as Material;
+  }
+
+  return null;
 }
 
 // ---------- Stock Movements ----------
