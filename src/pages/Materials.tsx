@@ -25,6 +25,7 @@ import {
   findMaterialByName,
   addStockMovement,
   addOperationLog,
+  resetMaterialsData,
 } from '@/lib/db';
 import { parseExcelFile, downloadMaterialTemplate, exportMaterialsToExcel } from '@/lib/excel';
 import { formatNumber, formatCurrency } from '@/lib/format';
@@ -109,6 +110,40 @@ export default function Materials() {
       loadData();
     } catch (err) {
       alert('فشل الحذف: ' + (err as Error).message);
+    }
+  };
+
+  const handleResetMaterials = async () => {
+    if (importing) return;
+
+    const confirmed = confirm(
+      'تحذير: سيتم حذف جميع المواد والتصنيفات والوحدات وكل الحركات والمشتريات وسجلات الاستهلاك المرتبطة بها نهائيًا. هذا الإجراء لا يمكن التراجع عنه. هل تريد المتابعة؟'
+    );
+    if (!confirmed) return;
+
+    try {
+      setImporting(true);
+      setImportMessage(null);
+      setImportResult(null);
+      setSelectedIds(new Set());
+
+      await resetMaterialsData();
+
+      setMaterials([]);
+      setCategories([]);
+      setUnits([]);
+      setSearch('');
+      setImportMessage({
+        type: 'success',
+        text: 'تم تصفير ورقة إدارة المواد وحذف البيانات القديمة المرتبطة بها نهائيًا. يمكنك الآن استيراد Excel من جديد.',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Materials reset failed:', err);
+      setImportMessage({ type: 'error', text: `فشل تصفير البيانات: ${message}` });
+      await loadData();
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -304,6 +339,15 @@ export default function Materials() {
           <button onClick={() => exportMaterialsToExcel(materials)} className="btn btn-secondary">
             <Download className="w-4 h-4" />
             تصدير Excel
+          </button>
+          <button
+            onClick={handleResetMaterials}
+            className="btn btn-danger"
+            disabled={importing}
+            title="حذف جميع البيانات القديمة الخاصة بإدارة المواد"
+          >
+            <Trash2 className="w-4 h-4" />
+            تصفير كل البيانات
           </button>
         </div>
       </div>
