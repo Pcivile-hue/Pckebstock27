@@ -23,6 +23,8 @@ import {
   findMaterialByName,
   addStockMovement,
   addOperationLog,
+  createCategory,   // ← أضف هذا
+  createUnit,       // ← وأضف هذا
 } from '@/lib/db';
 import { parseExcelFile, downloadMaterialTemplate, exportMaterialsToExcel } from '@/lib/excel';
 import { formatNumber, formatCurrency } from '@/lib/format';
@@ -140,25 +142,33 @@ export default function Materials() {
           continue;
         }
 
-        let category = categories.find((c) => c.name_ar === row.category || c.name_fr === row.category);
-        if (!category) {
-          // Create category if it doesn't exist
-          const { data: newCat } = await import('@/lib/supabase').then((m) =>
-            m.supabase.from('categories').insert({ name_ar: row.category, name_fr: row.category }).select('*').single()
-          );
-          category = newCat as Category;
-          if (category) setCategories((prev) => [...prev, category!]);
-        }
+        let category = categories.find(
+  (c) => c.name_ar === row.category || c.name_fr === row.category
+);
+if (!category) {
+  // إنشاء التصنيف إذا لم يكن موجوداً
+  category = await createCategory({
+    name_ar: row.category,
+    name_fr: row.category,
+  });
+  if (category) {
+    setCategories((prev) => [...prev, category!]);
+  }
+}
 
-        let unit = units.find((u) => u.name_ar === row.unit || u.name_fr === row.unit);
-        if (!unit) {
-          const { data: newUnit } = await import('@/lib/supabase').then((m) =>
-            m.supabase.from('units').insert({ name_ar: row.unit, name_fr: row.unit }).select('*').single()
-          );
-          unit = newUnit as Unit;
-          if (unit) setUnits((prev) => [...prev, unit!]);
-        }
-
+let unit = units.find(
+  (u) => u.name_ar === row.unit || u.name_fr === row.unit
+);
+if (!unit) {
+  // إنشاء الوحدة إذا لم تكن موجودة
+  unit = await createUnit({
+    name_ar: row.unit,
+    name_fr: row.unit,
+  });
+  if (unit) {
+    setUnits((prev) => [...prev, unit!]);
+  }
+}
         const existing = await findMaterialByName(row.name_fr, row.name_ar);
         if (existing) {
           await updateMaterial(existing.id, {
