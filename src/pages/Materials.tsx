@@ -1,4 +1,3 @@
-
 import { useEffect, useState, useRef } from 'react';
 import {
   Package,
@@ -21,8 +20,8 @@ import {
   deleteMaterial,
   getCategories,
   getUnits,
-  createCategory,
-  createUnit,
+  findOrCreateCategory,
+  findOrCreateUnit,
   findMaterialByName,
   addStockMovement,
   addOperationLog,
@@ -137,71 +136,120 @@ export default function Materials() {
   };
 
   const handleImport = async () => {
-    if (!importResult) return;
+    if (!importResult || importing) return;
+
     setImporting(true);
+    setImportMessage(null);
+
     let added = 0;
     let updated = 0;
     let skipped = 0;
+    let failed = 0;
+    const failures: string[] = [];
+
+    // Keep local caches so repeated categories/units in the same Excel file
+    // are not inserted more than once while React state is still updating.
+    const categoryCache = new Map<string, Category>();
+    const unitCache = new Map<string, Unit>();
+    categories.forEach((c) => {
+      categoryCache.set(c.name_ar.trim().toLowerCase(), c);
+      if (c.name_fr) categoryCache.set(c.name_fr.trim().toLowerCase(), c);
+    });
+    units.forEach((u) => {
+      unitCache.set(u.name_ar.trim().toLowerCase(), u);
+      if (u.name_fr) unitCache.set(u.name_fr.trim().toLowerCase(), u);
+    });
+
+    const validRows = importResult.rows.filter((row) => row.errors.length === 0);
 
     try {
-      for (const row of importResult.rows) {
-        if (row.errors.length > 0) {
-          skipped++;
-          continue;
+      for (let index = 0; index < validRows.length; index++) {
+        const row = validRows[index];
+
+        try {
+          const categoryKey = row.category.trim().toLowerCase();
+          let category = categoryCache.get(categoryKey);
+          if (!category) {
+            category = await findOrCreateCategory(row.category);
+            categoryCache.set(categoryKey, category);
+            setCategories((prev) => prev.some((c) => c.id === category!.id) ? prev : [...prev, category!]);
+          }
+
+          const unitKey = row.unit.trim().toLowerCase();
+          let unit = unitCache.get(unitKey);
+          if (!unit) {
+            unit = await findOrCreateUnit(row.unit);
+            unitCache.set(unitKey, unit);
+            setUnits((prev) => prev.some((u) => u.id === unit!.id) ? prev : [...prev, unit!]);
+          }
+
+          const existing = await findMaterialByName(row.name_fr, row.name_ar);
+
+          if (existing) {
+            await updateMaterial(existing.id, {
+              unit_price: row.price,
+              opening_quantity: row.quantity,
+              category_id: category.id,
+              unit_id: unit.id,
+            });
+            updated++;
+          } else {
+            const newMat = await createMaterial({
+              name_fr: row.name_fr,
+              name_ar: row.name_ar,
+              category_id: category.id,
+              unit_id: unit.id,
+              unit_price: row.price,
+              opening_quantity: row.quantity,
+            });
+
+            await addStockMovement({
+              material_id: newMat.id,
+              movement_type: 'opening',
+              quantity: row.quantity,
+              unit_price: row.price,
+              value: row.quantity * row.price,
+              notes: 'رصيد افتتاحي من استيراد Excel',
+            });
+            added++;
+          }
+        } catch (rowError) {
+          failed++;
+          const reason = rowError instanceof Error ? rowError.message : String(rowError);
+          failures.push(`صف ${row.rowIndex} — ${row.name_fr || row.name_ar}: ${reason}`);
+          console.error('Excel import row failed:', row, rowError);
         }
 
-        let category = categories.find((c) => c.name_ar === row.category || c.name_fr === row.category);
-        if (!category) {
-          // Create category if it doesn't exist
-          category = await createCategory({ name_ar: row.category, name_fr: row.category });
-          if (category) setCategories((prev) => [...prev, category!]);
-        }
-
-        let unit = units.find((u) => u.name_ar === row.unit || u.name_fr === row.unit);
-        if (!unit) {
-          unit = await createUnit({ name_ar: row.unit, name_fr: row.unit });
-          if (unit) setUnits((prev) => [...prev, unit!]);
-        }
-
-        const existing = await findMaterialByName(row.name_fr, row.name_ar);
-        if (existing) {
-          await updateMaterial(existing.id, {
-            unit_price: row.price,
-            opening_quantity: row.quantity,
-            category_id: category?.id,
-            unit_id: unit?.id,
-          });
-          updated++;
-        } else {
-          const newMat = await createMaterial({
-            name_fr: row.name_fr,
-            name_ar: row.name_ar,
-            category_id: category?.id,
-            unit_id: unit?.id,
-            unit_price: row.price,
-            opening_quantity: row.quantity,
-          });
-          await addStockMovement({
-            material_id: newMat.id,
-            movement_type: 'opening',
-            quantity: row.quantity,
-            unit_price: row.price,
-            value: row.quantity * row.price,
-            notes: 'رصيد افتتاحي من استيراد Excel',
-          });
-          added++;
-        }
+        // Yield to the browser so the progress UI remains responsive.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
       }
 
-      await addOperationLog('استيراد مواد', `تم استيراد ${added} مادة جديدة، تحديث ${updated}، تجاهل ${skipped}`);
-      setImportMessage({
-        type: 'success',
-        text: `تم الاستيراد بنجاح: ${added} مادة جديدة، ${updated} محدثة، ${skipped} متجاهلة.`,
-      });
+      skipped = importResult.rows.length - validRows.length;
+
+      await addOperationLog(
+        'استيراد مواد',
+        `تم استيراد ${added} مادة جديدة، تحديث ${updated}، فشل ${failed}، تجاهل ${skipped}`
+      );
+
+      if (failed === 0 && skipped === 0) {
+        setImportMessage({
+          type: 'success',
+          text: `تم الاستيراد بنجاح: ${added} مادة جديدة و${updated} محدثة.`,
+        });
+      } else {
+        const preview = failures.slice(0, 3).join(' | ');
+        setImportMessage({
+          type: 'error',
+          text: `اكتمل الاستيراد جزئياً: ${added} جديدة، ${updated} محدثة، ${failed} فشلت، ${skipped} متجاهلة.${preview ? ` التفاصيل: ${preview}` : ''}`,
+        });
+      }
+
+      await loadData();
       setImportResult(null);
-      loadData();
     } catch (err) {
-      setImportMessage({ type: 'error', text: 'فشل الاستيراد: ' + (err as Error).message });
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Excel import failed:', err);
+      setImportMessage({ type: 'error', text: `فشل الاستيراد: ${message}` });
     } finally {
       setImporting(false);
     }
@@ -212,7 +260,25 @@ export default function Materials() {
   }
 
   return (
-    <div className="space-y-4">
+    <>
+      {importing && importResult && (
+        <div className="fixed inset-0 z-[100] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md text-center">
+            <div className="mx-auto mb-5 w-14 h-14 rounded-full border-4 border-slate-200 border-t-teal-600 animate-spin" />
+            <h2 className="text-xl font-bold text-slate-800 mb-2">انتظر قليلاً...</h2>
+            <p className="text-slate-500 leading-7">
+              جاري حفظ المواد في قاعدة البيانات.
+              <br />
+              لا تغلق الصفحة حتى تكتمل العملية.
+            </p>
+            <div className="mt-4 text-sm text-slate-500">
+              تتم معالجة {importResult.validCount} مادة صالحة الآن...
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -446,7 +512,8 @@ export default function Materials() {
           }}
         />
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
