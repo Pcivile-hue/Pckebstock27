@@ -1,3 +1,4 @@
+
 import { useEffect, useState, useRef } from 'react';
 import {
   Package,
@@ -20,11 +21,11 @@ import {
   deleteMaterial,
   getCategories,
   getUnits,
+  createCategory,
+  createUnit,
   findMaterialByName,
   addStockMovement,
   addOperationLog,
-  createCategory,   // ← أضف هذا
-  createUnit,       // ← وأضف هذا
 } from '@/lib/db';
 import { parseExcelFile, downloadMaterialTemplate, exportMaterialsToExcel } from '@/lib/excel';
 import { formatNumber, formatCurrency } from '@/lib/format';
@@ -66,14 +67,21 @@ export default function Materials() {
     }
   };
 
-  const filtered = materials.filter((m) => {
-    const q = search.toLowerCase();
-    return (
-      m.name_ar.toLowerCase().includes(q) ||
-      m.name_fr.toLowerCase().includes(q) ||
-      (m.category?.name_ar || '').toLowerCase().includes(q)
-    );
-  });
+  const filtered = [...materials]
+    .filter((m) => {
+      const q = search.toLowerCase();
+      return (
+        m.name_ar.toLowerCase().includes(q) ||
+        m.name_fr.toLowerCase().includes(q) ||
+        (m.category?.name_ar || '').toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => {
+      const catA = a.category?.name_ar || a.category?.name_fr || '';
+      const catB = b.category?.name_ar || b.category?.name_fr || '';
+      if (catA !== catB) return catA.localeCompare(catB, 'ar');
+      return (a.name_ar || '').localeCompare(b.name_ar || '', 'ar');
+    });
 
   const toggleSelect = (id: string) => {
     const next = new Set(selectedIds);
@@ -142,33 +150,19 @@ export default function Materials() {
           continue;
         }
 
-        let category = categories.find(
-  (c) => c.name_ar === row.category || c.name_fr === row.category
-);
-if (!category) {
-  // إنشاء التصنيف إذا لم يكن موجوداً
-  category = await createCategory({
-    name_ar: row.category,
-    name_fr: row.category,
-  });
-  if (category) {
-    setCategories((prev) => [...prev, category!]);
-  }
-}
+        let category = categories.find((c) => c.name_ar === row.category || c.name_fr === row.category);
+        if (!category) {
+          // Create category if it doesn't exist
+          category = await createCategory({ name_ar: row.category, name_fr: row.category });
+          if (category) setCategories((prev) => [...prev, category!]);
+        }
 
-let unit = units.find(
-  (u) => u.name_ar === row.unit || u.name_fr === row.unit
-);
-if (!unit) {
-  // إنشاء الوحدة إذا لم تكن موجودة
-  unit = await createUnit({
-    name_ar: row.unit,
-    name_fr: row.unit,
-  });
-  if (unit) {
-    setUnits((prev) => [...prev, unit!]);
-  }
-}
+        let unit = units.find((u) => u.name_ar === row.unit || u.name_fr === row.unit);
+        if (!unit) {
+          unit = await createUnit({ name_ar: row.unit, name_fr: row.unit });
+          if (unit) setUnits((prev) => [...prev, unit!]);
+        }
+
         const existing = await findMaterialByName(row.name_fr, row.name_ar);
         if (existing) {
           await updateMaterial(existing.id, {
